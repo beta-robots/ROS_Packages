@@ -4,7 +4,7 @@ project(tactilesensors4)
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(catkin REQUIRED COMPONENTS roscpp rospy std_msgs genmsg message_generation)
+find_package(catkin REQUIRED COMPONENTS roscpp rospy std_msgs genmsg message_generation geometry_msgs)
 
 ## System dependencies are found with CMake's conventions
 # find_package(Boost REQUIRED COMPONENTS system)
@@ -55,6 +55,7 @@ find_package(catkin REQUIRED COMPONENTS roscpp rospy std_msgs genmsg message_gen
    Data3f.msg
    Data4f.msg
    Sensor.msg
+   CellArray.msg
 )
 
 ## Generate services in the 'srv' folder
@@ -72,7 +73,7 @@ find_package(catkin REQUIRED COMPONENTS roscpp rospy std_msgs genmsg message_gen
 # )
 
 ## Generate added messages and services with any dependencies listed here
-generate_messages(DEPENDENCIES std_msgs)
+generate_messages(DEPENDENCIES std_msgs geometry_msgs)
 
 ###################################
 ## catkin specific configuration ##
