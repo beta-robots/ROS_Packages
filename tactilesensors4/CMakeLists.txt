@@ -86,7 +86,7 @@ generate_messages(DEPENDENCIES std_msgs geometry_msgs)
 ## DEPENDS: system dependencies of this project that dependent projects also need
 catkin_package(
 # INCLUDE_DIRS include
-#  LIBRARIES tactilesensors
+# LIBRARIES tactilesensors
   CATKIN_DEPENDS message_runtime
   DEPENDS system_lib
 )
