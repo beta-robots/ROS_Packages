@@ -92,6 +92,9 @@ rosrun tactilesensors PollData [-device PATH_TO_DEV]
 #include <math.h>
 #include <cmath>
 
+// TODO Separate data and visualization publishers
+#include <visualization_msgs/MarkerArray.h>
+
 //Using std namespace
 using namespace std;
 
@@ -106,6 +109,9 @@ using namespace std;
 bool IMUCalibrationMode = false;
 bool StopSensorDataAcquisition=false;
 bool ModeHasChanged=true;
+bool isStaticOffsetSet = false;
+const std::string left_sensor_frame_id = "left_sensor";
+const std::string right_sensor_frame_id = "right_sensor";
 //struct timespec th, stop;
 double EllapsedMicroSeconds;
 //IMU Biases:
@@ -115,6 +121,8 @@ float norm_bias1=0,norm_bias2=0;
 float ax1_bias=0,ay1_bias=0,az1_bias=0,ax2_bias=0,ay2_bias=0,az2_bias=0;
 float gx1_bias=0,gy1_bias=0,gz1_bias=0,gx2_bias=0,gy2_bias=0,gz2_bias=0;
 float mx1_bias=0,my1_bias=0,mz1_bias=0,mx2_bias=0,my2_bias=0,mz2_bias=0; // For future implementation (magnetometers are not currently acquired)
+
+uint16_t MAX_VALUE;
 
 enum UsbPacketSpecial
 {
@@ -174,7 +182,8 @@ static bool usbReadByte(UsbPacket *packet, unsigned int *readSoFar, uint8_t d);
 static bool parseSensors(UsbPacket *packet, Fingers *fingers, tactilesensors4::Sensor *SensorsData);
 static inline uint16_t parseBigEndian2(uint8_t *data);
 static uint8_t extractUint16(uint16_t *to, uint16_t toCount, uint8_t *data, unsigned int size);
-
+static inline void createMarkerArray(const tactilesensors4::StaticData& __data, visualization_msgs::MarkerArray& __markers);
+static inline void baselinedValues(const tactilesensors4::StaticData& __offset, tactilesensors4::StaticData& __data);
 
 //Callbacks:
 bool TactileSensorServiceCallback(tactilesensors4::TactileSensors::Request  &req, tactilesensors4::TactileSensors::Response &res)
@@ -210,6 +219,7 @@ int main(int argc, char **argv)
     ros::NodeHandle n;
     ros::ServiceServer TactileSensorService=n.advertiseService("Tactile_Sensors_Service", TactileSensorServiceCallback);
     tactilesensors4::Sensor SensorsData;
+    tactilesensors4::StaticData StaticDataOffset;
     tactilesensors4::Quaternion TheQuaternions;
     ros::Publisher StaticData_pub = n.advertise<tactilesensors4::StaticData>("TactileSensor4/StaticData", 1000);
     ros::Publisher Dynamic_pub = n.advertise<tactilesensors4::Dynamic>("TactileSensor4/Dynamic", 1000);
@@ -219,6 +229,7 @@ int main(int argc, char **argv)
     ros::Publisher Magnetometer_pub = n.advertise<tactilesensors4::Magnetometer>("TactileSensor4/Magnetometer",1000);
     // I decided not to publish the quaternions for now (since I'm not sure it would be useful for anyone...:
     //    ros::Publisher Quaternion = n.advertise<tactilesensors4::Quaternion>("TactileSensor4/Quaternion",1000);
+    ros::Publisher StaticDataViz_pub = n.advertise<visualization_msgs::MarkerArray>("TactileSensor4/StaticDataViz", 1000);
 
     int USB, n_read;
     char const * TheDevice = "/dev/ttyACM0"; // By default, the device descriptor is set to "/dev/ttyACM0"
@@ -231,6 +242,8 @@ int main(int argc, char **argv)
     const float aRes = 2.0/32768.0; // Accelerometers MPU9250 set resolution
     const float gRes = 250.0/32768.0; //Gyroscope set resolution (250 Degrees-Per-Second)
 
+    visualization_msgs::MarkerArray static_data_viz;
+    MAX_VALUE = 400;
 
     if(cmdOptionExists(argv, argv+argc, "-device"))
     {
@@ -273,6 +286,18 @@ int main(int argc, char **argv)
                     // Then we copy static values for both sensors:
                     memcpy(&SensorsData.staticdata.taxels[0].values,&fingers.finger[0].staticTactile,sizeof(fingers.finger[0].staticTactile));
                     memcpy(&SensorsData.staticdata.taxels[1].values,&fingers.finger[1].staticTactile,sizeof(fingers.finger[1].staticTactile));
+
+		    if( !isStaticOffsetSet )
+		    {
+			  StaticDataOffset = SensorsData.staticdata;
+			  std::cout << "StaticDataOffset: " << StaticDataOffset << std::endl;
+			  isStaticOffsetSet = true;
+		    }
+		    // substract the offset
+		    baselinedValues(StaticDataOffset, SensorsData.staticdata);
+
+		    // Rviz markers
+		    createMarkerArray(SensorsData.staticdata, static_data_viz);
 
                     // Then we copy accelerometer values:
                     memcpy(&SensorsData.accelerometer.data[0].values,&fingers.finger[0].accelerometer,sizeof(fingers.finger[0].accelerometer));
@@ -339,6 +364,7 @@ int main(int argc, char **argv)
                         Accelerometer_pub.publish(SensorsData.accelerometer);
                         Gyroscope_pub.publish(SensorsData.gyroscope);
                         Magnetometer_pub.publish(SensorsData.magnetometer);
+                        StaticDataViz_pub.publish(static_data_viz);
 
                         // If we had the time to compute the IMU biases, then we can publish the Euler angles:
                         if (BIASCalculationIterator>BIASCalculationIterations)
@@ -572,4 +598,85 @@ static uint8_t extractUint16(uint16_t *to, uint16_t toCount, uint8_t *data, unsi
 
     // Return number of bytes read
     return cur * 2;
+}
+
+static inline void createMarkerArray(const tactilesensors4::StaticData& __data, visualization_msgs::MarkerArray& __markers)
+{
+	// std::cout << "Markerizing!" << std::endl;
+	__markers.markers.clear();
+	ros::Time now = ros::Time::now();
+	const double cell_width_x = 0.006;
+	const double cell_height_y = 0.0055;
+	double init_x = -(FINGER_STATIC_TACTILE_ROW/2)*cell_width_x + cell_width_x/2;
+	double init_y = (FINGER_STATIC_TACTILE_COL/2)*cell_height_y;
+
+	visualization_msgs::Marker current_marker;
+	current_marker.header.stamp = now;
+	current_marker.action = visualization_msgs::Marker::ADD;
+	current_marker.color.a = 1.0;
+	current_marker.type = visualization_msgs::Marker::CUBE;
+	current_marker.scale.x = 0.95*cell_width_x;
+	current_marker.scale.y = 0.95*cell_height_y;
+	current_marker.scale.z = 0.001;
+	current_marker.pose.orientation.w = 1.0;
+	current_marker.pose.position.z = 0.01;
+
+	int col = 0;
+	int row = 0;
+	for(int i = 0; i < FINGER_STATIC_TACTILE_COUNT; ++i)
+	{
+		current_marker.id = i;
+		current_marker.ns = left_sensor_frame_id;
+		current_marker.header.frame_id = left_sensor_frame_id;
+		float value = __data.taxels[0].values.at(i)/(1.0*MAX_VALUE);
+		current_marker.color.r =value;
+		current_marker.color.b = 1.0 - value;
+		if( row == FINGER_STATIC_TACTILE_ROW )
+		{
+			row = 0;
+			col++;
+		}
+		current_marker.pose.position.x = init_x + row*cell_width_x;
+		current_marker.pose.position.y = init_y - col*cell_height_y;
+		row++;
+		__markers.markers.push_back(current_marker);
+	}
+	col = 0;
+	row = 0;
+	for(int i = 0; i < FINGER_STATIC_TACTILE_COUNT; ++i)
+	{
+		current_marker.id = i;
+		current_marker.ns = right_sensor_frame_id;
+		current_marker.header.frame_id = right_sensor_frame_id;
+		float value =  __data.taxels[1].values.at(i)/(1.0*MAX_VALUE);
+		current_marker.color.r = value;
+		current_marker.color.b = 1.0 - value;
+		if( row == FINGER_STATIC_TACTILE_ROW )
+		{
+			row = 0;
+			col++;
+		}
+		current_marker.pose.position.x = init_x + row*cell_width_x;
+		current_marker.pose.position.y = init_y - col*cell_height_y;
+		row++;
+		__markers.markers.push_back(current_marker);
+	}
+}
+
+static inline void baselinedValues(const tactilesensors4::StaticData& __offset, tactilesensors4::StaticData& __data)
+{
+	// Assumes they are identical!!
+	for(int t = 0;  t < __offset.taxels.size(); ++t)
+	{
+		for(int i = 0; i < __offset.taxels.at(t).values.size(); ++i)
+		{
+			if( __data.taxels.at(t).values.at(i) > __offset.taxels.at(t).values.at(i) )
+				__data.taxels.at(t).values.at(i) -= __offset.taxels.at(t).values.at(i);
+			else
+				__data.taxels.at(t).values.at(i) = 0;
+
+			if ( __data.taxels.at(t).values.at(i) > MAX_VALUE )
+				MAX_VALUE = __data.taxels.at(t).values.at(i);
+		}
+	}
 }
